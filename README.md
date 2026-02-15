@@ -89,7 +89,7 @@ The system uses a specific algorithm to prevent false positives:
 
 ---
 
-## 👨‍💻 Author
+## 👨‍💻 Authors
 Raviraj Kutwal
 Aayush Bhandare
 Tejas Modhave
