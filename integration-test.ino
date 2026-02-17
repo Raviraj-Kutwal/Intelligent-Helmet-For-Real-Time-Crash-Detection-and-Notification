@@ -3,113 +3,134 @@
 #include <Adafruit_Sensor.h>
 #include <SoftwareSerial.h>
 #include <math.h>
+#include <string.h>
 
-// MODULES
 Adafruit_MPU6050 mpu;
-SoftwareSerial gpsSerial(4, 3);   // GPS RX, TX
+SoftwareSerial gpsSerial(4, 3);  // GPS RX, TX
 
 #define PHONE "+917720090001"
+#define ACC_THRESHOLD 11.5
+#define COOLDOWN_TIME 20000
 
-// CONFIG
-#define SAMPLE_INTERVAL 200
-#define BASELINE_SAMPLES 20
-#define DELTA_THRESHOLD 8.0
-#define COOLDOWN_TIME 30000
-#define STILL_GYRO_LIMIT 0.5
-
-unsigned long lastSampleTime = 0;
 unsigned long lastAlertTime = 0;
 
-float accHistory[BASELINE_SAMPLES];
-int accIndex = 0;
-bool baselineReady = false;
-
-char latitude[15] = "0.0";
+char latitude[15]  = "0.0";
 char longitude[15] = "0.0";
 bool gpsFix = false;
 
 void setup() {
-  Serial.begin(9600);      // GSM now uses hardware Serial
-  gpsSerial.begin(9600);
+
+  Serial.begin(9600);       // GSM
+  gpsSerial.begin(9600);    // GPS
   Wire.begin();
 
-  mpu.begin();
+  if (!mpu.begin()) {
+    while (1);
+  }
 
-  delay(2000);
+  delay(3000);
 
   Serial.println("AT");
-  delay(500);
+  delay(1000);
   Serial.println("ATE0");
-  delay(500);
+  delay(1000);
   Serial.println("AT+CMGF=1");
-
-  Serial.println("System READY");
+  delay(1000);
 }
 
 void loop() {
-
-  unsigned long now = millis();
-  if (now - lastSampleTime < SAMPLE_INTERVAL) return;
-  lastSampleTime = now;
 
   updateGPS();
 
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  float accMag = sqrt(
+  float acc = sqrt(
     a.acceleration.x * a.acceleration.x +
     a.acceleration.y * a.acceleration.y +
     a.acceleration.z * a.acceleration.z
   );
 
-  float gyroMag = sqrt(
-    g.gyro.x * g.gyro.x +
-    g.gyro.y * g.gyro.y +
-    g.gyro.z * g.gyro.z
-  );
+  unsigned long now = millis();
 
-  float baseline = updateBaseline(accMag);
-  float delta = fabs(accMag - baseline);
-
-  if (baselineReady &&
-      delta > DELTA_THRESHOLD &&
-      gyroMag > STILL_GYRO_LIMIT &&
-      (now - lastAlertTime > COOLDOWN_TIME)) {
-
+  if (acc > ACC_THRESHOLD && (now - lastAlertTime > COOLDOWN_TIME)) {
     sendSMS();
     lastAlertTime = now;
   }
-}
 
-float updateBaseline(float val) {
-  accHistory[accIndex++] = val;
-
-  if (accIndex >= BASELINE_SAMPLES) {
-    accIndex = 0;
-    baselineReady = true;
-  }
-
-  float sum = 0;
-  int count = baselineReady ? BASELINE_SAMPLES : accIndex;
-
-  for (int i = 0; i < count; i++) sum += accHistory[i];
-  return sum / count;
+  delay(300);
 }
 
 void updateGPS() {
+
+  static char line[120];
+  static int idx = 0;
+
   while (gpsSerial.available()) {
+
     char c = gpsSerial.read();
-    // (Keep your existing parser here)
+
+    if (c == '\n') {
+      line[idx] = '\0';
+      parseGPRMC(line);
+      idx = 0;
+    } else if (idx < 119) {
+      line[idx++] = c;
+    }
   }
+}
+
+void parseGPRMC(char *nmea) {
+
+  if (strncmp(nmea, "$GPRMC", 6) != 0) return;
+
+  char *token = strtok(nmea, ",");
+  int field = 0;
+
+  char latRaw[15] = "";
+  char lonRaw[15] = "";
+  char ns = 'N';
+  char ew = 'E';
+
+  while (token) {
+    field++;
+
+    if (field == 3 && token[0] != 'A') return;
+    if (field == 4) strcpy(latRaw, token);
+    if (field == 5) ns = token[0];
+    if (field == 6) strcpy(lonRaw, token);
+    if (field == 7) ew = token[0];
+
+    token = strtok(NULL, ",");
+  }
+
+  convertCoord(latRaw, ns, latitude);
+  convertCoord(lonRaw, ew, longitude);
+  gpsFix = true;
+}
+
+void convertCoord(char *raw, char dir, char *out) {
+
+  float val = atof(raw);
+  int deg = (int)(val / 100);
+  float min = val - deg * 100;
+  float dec = deg + min / 60.0;
+
+  if (dir == 'S' || dir == 'W')
+    dec *= -1;
+
+  dtostrf(dec, 8, 6, out);
 }
 
 void sendSMS() {
 
+  Serial.println("AT+CMGF=1");
+  delay(1000);
+
   Serial.print("AT+CMGS=\"");
   Serial.print(PHONE);
   Serial.println("\"");
-  delay(300);
+  delay(1500);
 
   Serial.print("Accident detected!\nLocation:\n");
 
@@ -123,4 +144,5 @@ void sendSMS() {
   }
 
   Serial.write(26);
+  delay(7000);
 }
